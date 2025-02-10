@@ -9,6 +9,7 @@ python standalone_yolo.py \
     --real-dir /path/to/customer_data \
     --syn-dir /path/to/advex_data \
     --epochs 200 \
+    --augment True \ # remove this to disable augmentations
     --seed 1
 
 The real and synthetic data directories should contain:
@@ -30,9 +31,62 @@ from contextlib import contextmanager
 import numpy as np
 import cv2
 from PIL import Image
+from tqdm import tqdm
 from ultralytics import settings as ultralytics_settings
 
 SUPPORTED_IMAGE_FORMATS = [".jpg", ".jpeg", ".png"]
+
+
+def apply_augmentations(image, mask):
+    """Apply augmentations such as rotation, crop, and jitter to both image and mask."""
+    angle = random.uniform(-15, 15)
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated_image = cv2.warpAffine(image, M, (w, h))
+    rotated_mask = cv2.warpAffine(mask, M, (w, h))
+    return rotated_image, rotated_mask
+
+def augment_dataset(train_dir, target_count) -> str:
+    """Apply augmentations to real dataset to create an augmented dataset with target_count images."""
+    img_train_dir = os.path.join(train_dir, "images")
+    mask_train_dir = os.path.join(train_dir, "masks")
+    augmented_img_dir = os.path.join(train_dir, "augmented", "images")
+    augmented_mask_dir = os.path.join(train_dir, "augmented", "masks")
+    augmented_dir = os.path.join(train_dir, "augmented") # path to augmented dataset
+
+    if os.path.exists(augmented_dir):
+        shutil.rmtree(augmented_dir)
+        
+    os.makedirs(augmented_img_dir, exist_ok=True)
+    os.makedirs(augmented_mask_dir, exist_ok=True)
+    
+    real_images = [img for img in os.listdir(img_train_dir) if img.endswith(tuple(SUPPORTED_IMAGE_FORMATS))]
+    num_real = len(real_images)
+    num_augmentations_needed = max(0, target_count - num_real)
+    
+    augmented_images = 0
+
+    with tqdm(total=num_augmentations_needed, desc="Augmenting dataset") as pbar:
+        while augmented_images < num_augmentations_needed:
+            img_name = random.choice(real_images)
+            img_path = os.path.join(img_train_dir, img_name)
+            mask_path = os.path.join(mask_train_dir, img_name)
+            
+            image = cv2.imread(img_path)
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
+            if image is None or mask is None:
+                click.echo(f"Warning: Failed to load image or mask for {img_name}, skipping.")
+                continue
+            augmented_image, augmented_mask = apply_augmentations(image, mask)
+            
+            aug_img_name = f"aug_{augmented_images}_{img_name}"
+            cv2.imwrite(os.path.join(augmented_img_dir, aug_img_name), augmented_image)
+            cv2.imwrite(os.path.join(augmented_mask_dir, aug_img_name), augmented_mask)
+            augmented_images += 1
+            pbar.update(1)
+    return augmented_dir
 
 
 def mask_to_polygons(mask):
@@ -332,6 +386,11 @@ def add_synthetic_data(train_dir: str, syn_dir: str):
     help="Directory containing synthetic images and labels",
 )
 @click.option(
+    "--augment",
+    is_flag=False,
+    help="Apply augmentations to real data",
+)
+@click.option(
     "--epochs",
     default=200,
     type=int,
@@ -345,7 +404,7 @@ def add_synthetic_data(train_dir: str, syn_dir: str):
     help="Random seed for reproducibility",
     show_default=True,
 )
-def main(real_dir: str, syn_dir: str, epochs: int, seed: int):
+def main(real_dir: str, syn_dir: str, augment: bool, epochs: int, seed: int):
     """
     Train YOLO model for segmentation.
 
@@ -379,10 +438,18 @@ def main(real_dir: str, syn_dir: str, epochs: int, seed: int):
 
         click.echo("Evaluating real model...")
         real_results = evaluate_yolo(real_model)
+        
+        augmented_results = None
+        if augment:
+            click.echo("Applying augmentations and training on real + augmented data...")
+            total_target_count = len(os.listdir(os.path.join(real_dir, "images"))) + len(os.listdir(os.path.join(syn_dir, "images")))
+            augmented_dir = augment_dataset(real_dir, total_target_count)
+            # convert augmented data to YOLO format
+            convert_real_to_yolo(augmented_dir, augmented_dir, leave_images_untouched=True)
+            augmented_model = train_yolo(yaml_path, epochs)
+            augmented_results = evaluate_yolo(augmented_model)
 
         click.echo("Adding synthetic data to train set")
-        
-        # Convert synthetic data to YOLO format
         if not os.path.exists(os.path.join(syn_dir, "labels")):
             click.echo(f"Labels directory does not exist in {syn_dir}. Creating...")
             convert_real_to_yolo(syn_dir, syn_dir, leave_images_untouched=True)
@@ -399,8 +466,19 @@ def main(real_dir: str, syn_dir: str, epochs: int, seed: int):
             "Customer Data": real_results,
             "Customer Data + Advex": syn_results,
         }
-        click.echo(f"Evaluation results: {combined_results}")
+        
+        if augment:
+            combined_results["Customer Data + Augmentations"] = augmented_results
+            
+        # Print results
+        click.echo("--------------------------------")
+        click.echo("Evaluation results:")
+        for technique, results in combined_results.items():
+            click.echo(f"{technique}:")
+            for metric, value in results.items():
+                click.echo(f"  {metric}: {value:.4f}")
 
 
 if __name__ == "__main__":
+    
     main()
