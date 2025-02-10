@@ -1,6 +1,8 @@
-ultralytics
-PyYAML
 click
 numpy
 opencv-python
-Pillow
+pillow
+pyyaml
+shutil
+tqdm
+ultralytics
