@@ -1,0 +1,6 @@
+ultralytics
+PyYAML
+click
+numpy
+opencv-python
+Pillow
