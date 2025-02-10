@@ -3,7 +3,7 @@
 To evaluate model performance using Advex powered data:
 1. Clone this repository and cd into `model-training`
 2. Install packages: `python -r requirements.txt`
-3. Run `python standalone_yolo.py --real-dir /path/to/customer_data --syn-dir /path/to/advex_data --epochs 200 --seed 1`
+3. Run `python standalone_yolo.py --real-dir /path/to/customer_data --syn-dir /path/to/advex_data --epochs 200 --seed 1 --augment True`
 
 
 
